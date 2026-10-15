@@ -1,4 +1,56 @@
-    - name: Build 豆包
+name: Build-Padavan-RT-AC85P-豆包
+
+on:
+  workflow_dispatch:   # 仅手动触发
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04   # 编老内核 3.4 当前最稳的 runner，勿轻易升 24.04(老 gcc/openssl 有兼容坑)
+    # 防止 fork 被他人触发跑构建（只有仓库 owner 本人触发才执行）
+    if: github.event.repository.owner.id == github.event.sender.id
+
+    steps:
+    # ------------------------------------------------------------------
+    # 1. 安装编译依赖
+    # ------------------------------------------------------------------
+    - name: Initialization environment
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo apt-get update
+        sudo apt-get -y install unzip libtool-bin curl cmake gawk flex bison nano xxd fakeroot \
+        cpio git python3-docutils gettext automake autopoint texinfo build-essential help2man \
+        pkg-config zlib1g-dev libgmp3-dev libmpc-dev libmpfr-dev libncurses5-dev libltdl-dev wget
+
+    # ------------------------------------------------------------------
+    # 2. 拉取源码 + 下载交叉编译工具链
+    # ------------------------------------------------------------------
+    - name: Clone source code
+      env:
+        KERNEL: 3.4   # 决定下载哪套工具链(3.4/4.4)，须与下面 Build 步骤保持一致
+      run: |
+        git clone --depth=1 https://github.com/fightroad/Padavan-KVR.git /opt/rt-n56u
+        cd /opt/rt-n56u/toolchain-mipsel
+
+        sh dl_toolchain.sh
+
+        # 给下载回来的工具链二进制补执行权限
+        chmod -R +x toolchain-3.4.x/bin || true
+
+        # 校验交叉编译器
+        if [ ! -f "toolchain-3.4.x/bin/mipsel-linux-uclibc-gcc" ]; then
+          echo "ERROR: 工具链下载失败，缺少 mipsel 编译器"
+          exit 1
+        fi
+
+        # build脚本硬编码 /toolchain-3.4.x，软链接
+        sudo ln -s /opt/rt-n56u/toolchain-mipsel/toolchain-3.4.x /toolchain-3.4.x
+        mkdir -p /opt/images/
+
+    # ------------------------------------------------------------------
+    # 3. 修改配置 + 编译固件
+    # ------------------------------------------------------------------
+    - name: Build Firmware
       env:
         TNAME: RT-AC85P
         KERNEL: 3.4
@@ -87,3 +139,13 @@
           ls -la images || echo "images目录不存在"
           exit 2
         fi
+
+    # ------------------------------------------------------------------
+    # 4. 上传固件
+    # ------------------------------------------------------------------
+    - name: Upload packages
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: Padavan-packages
+        path: /opt/images
