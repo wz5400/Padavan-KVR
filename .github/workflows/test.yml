@@ -5,7 +5,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04   # 编老内核 3.4 当前最稳的 runner，勿轻易升 24.04(老 gcc/openssl 有兼容坑)
+    runs-on: ubuntu-20.04   # 编老内核 3.4 当前最稳的 runner，勿轻易升 24.04(老 gcc/openssl 有兼容坑)
     # 防止 fork 被他人触发跑构建（只有仓库 owner 本人触发才执行）
     if: github.event.repository.owner.id == github.event.sender.id
 
