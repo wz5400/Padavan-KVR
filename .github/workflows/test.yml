@@ -1,20 +1,18 @@
-
-
 name: Build-Padavan-RT-AC85P-千问
 
 on:
-  workflow_dispatch:   # 仅手动触发
+  workflow_dispatch:
+
+# ⚠️ 编译前必读：Padavan（rtn56u 系）只支持 MTK/Ralink 无线芯片。
+#    若你的 AC85P 是博通 BCM4360 射频，刷入后 WiFi 无法启动（仅 LAN/后台可用），
+#    请改走 OpenWrt。无线芯片为 MTK（MT76xx）方可继续。
 
 jobs:
   build:
-    runs-on: ubuntu-22.04   # 编老内核 3.4 当前最稳的 runner，勿轻易升 24.04(老 gcc/openssl 有兼容坑)
-    # 防止 fork 被他人触发跑构建（只有仓库 owner 本人触发才执行）
+    runs-on: ubuntu-22.04
     if: github.event.repository.owner.id == github.event.sender.id
 
     steps:
-    # ------------------------------------------------------------------
-    # 1. 安装编译依赖
-    # ------------------------------------------------------------------
     - name: Initialization environment
       env:
         DEBIAN_FRONTEND: noninteractive
@@ -24,42 +22,29 @@ jobs:
         cpio git python3-docutils gettext automake autopoint texinfo build-essential help2man \
         pkg-config zlib1g-dev libgmp3-dev libmpc-dev libmpfr-dev libncurses5-dev libltdl-dev wget
 
-    # ------------------------------------------------------------------
-    # 2. 拉取源码 + 下载交叉编译工具链
-    # ------------------------------------------------------------------
     - name: Clone source code
       env:
-        KERNEL: 3.4   # 决定下载哪套工具链(3.4/4.4)，须与下面 Build 步骤保持一致
+        KERNEL: 3.4
       run: |
         git clone --depth=1 https://github.com/fightroad/Padavan-KVR.git /opt/rt-n56u
         cd /opt/rt-n56u/toolchain-mipsel
-
-        # 【提醒】部分 fork 用 TOOLCHAIN_TYPE 或直接写死工具链版本，并不认 KERNEL 变量。
-        # 若 dl_toolchain.sh 下错版本或什么都没下，请打开该脚本核对它实际读取的变量名。
         sh dl_toolchain.sh
-
-        # 给下载回来的工具链二进制补执行权限（很多工具链解包后默认没有 x 权限，会编译失败）
-        chmod -R +x toolchain-3.4.x/bin || true
-
-        # 校验交叉编译器是否真的下载成功（缺失就第一时间报错，不要拖到编译中段才崩）
+        # 校验交叉编译器是否下载成功
         if [ ! -f "toolchain-3.4.x/bin/mipsel-linux-uclibc-gcc" ]; then
-          echo "ERROR: 工具链下载失败，缺少 mipsel 编译器"
+          echo "ERROR: 工具链下载失败，缺少mipsel编译器"
           exit 1
         fi
-
-        # build 脚本认的是固定路径 /toolchain-3.4.x，软链保留
+        # 解包后的二进制可能没有执行权限，老工具链高频坑
+        chmod -R +x toolchain-3.4.x/bin
         sudo ln -s /opt/rt-n56u/toolchain-mipsel/toolchain-3.4.x /toolchain-3.4.x
         mkdir -p /opt/images/
 
-    # ------------------------------------------------------------------
-    # 3. 修改配置 + 编译固件
-    # ------------------------------------------------------------------
     - name: Build Firmware
       env:
-        TNAME: RT-AC85P   # 目标机型，须与 configs/templates/$TNAME.config 同名
+        TNAME: RT-AC85P
         KERNEL: 3.4
       run: |
-        # 导入交叉编译工具链 PATH（关键，否则找不到 mipsel-gcc）
+        # ==========【关键：导入交叉编译工具链 PATH】==========
         export PATH=/opt/rt-n56u/toolchain-mipsel/toolchain-3.4.x/bin:$PATH
         if [ ! -f "/opt/rt-n56u/toolchain-mipsel/toolchain-3.4.x/bin/mipsel-linux-uclibc-gcc" ]; then
           echo "ERROR: 编译器不存在，终止编译"
@@ -68,19 +53,15 @@ jobs:
 
         cd /opt/rt-n56u/trunk
         if [ ! -f configs/templates/$TNAME.config ] ; then
-          echo "configs/templates/$TNAME.config not found"
+          echo "configs/templates/$TNAME.config not found "
           exit 1
         fi
         cp -f configs/templates/$TNAME.config .config
 
-        # ==================================================================
-        # 【配置改写区 · 先删后加范式】
-        # 思路：先把模板里可能存在的功能项整行删干净，再把"自己要的"重新追加，
-        # 避免模板残留的 =y 互相打架。
-        # 要增删功能，只在本区域内改。
-        # ==================================================================
-
-        # ---- A. 把不需要 / 需要重置默认值的项先处理 ----
+        ######################################################################
+        # 【A区】重置默认值：把模板里已开启、但你明确不要的功能关掉
+        #         注意：只用 sed 改 =y 为 =n，不要用 echo 追加 =n（会被模板残留覆盖）
+        ######################################################################
         sed -i 's/CONFIG_FIRMWARE_INCLUDE_DNSFORWARDER=y/CONFIG_FIRMWARE_INCLUDE_DNSFORWARDER=n/g' .config
         sed -i 's/CONFIG_FIRMWARE_INCLUDE_MENTOHUST=y/CONFIG_FIRMWARE_INCLUDE_MENTOHUST=n/g' .config
         sed -i 's/CONFIG_FIRMWARE_INCLUDE_SCUTCLIENT=y/CONFIG_FIRMWARE_INCLUDE_SCUTCLIENT=n/g' .config
@@ -88,10 +69,14 @@ jobs:
         sed -i 's/CONFIG_FIRMWARE_INCLUDE_NJIT_CLIENT=y/CONFIG_FIRMWARE_INCLUDE_NJIT_CLIENT=n/g' .config
         sed -i 's/CONFIG_FIRMWARE_INCLUDE_OPENSSL_EXE=n/CONFIG_FIRMWARE_INCLUDE_OPENSSL_EXE=y/g' .config
 
-        # ---- B. 整行删除的插件（想留哪个，就注释掉对应删除行，再去 C 区 echo =y）----
-        # 注意：删 TRANSMISSION 会因前缀匹配连带删掉 TRANSMISSION_WEB_CONTROL，需要就单独补。
+        ######################################################################
+        # 【B区】整行删除：彻底清掉可能冲突或编译不过的组件
+        #         规则：每删一个，就在下面留一行注释，方便日后恢复
+        ######################################################################
         sed -i '/CONFIG_FIRMWARE_INCLUDE_TRANSMISSION/d' .config
+        sed -i '/CONFIG_FIRMWARE_INCLUDE_TRANSMISSION_WEB_CONTROL/d' .config
         sed -i '/CONFIG_FIRMWARE_INCLUDE_ARIA/d' .config
+        sed -i '/CONFIG_FIRMWARE_INCLUDE_ARIA_WEB_CONTROL/d' .config
         sed -i '/CONFIG_FIRMWARE_INCLUDE_ZEROTIER/d' .config
         sed -i '/CONFIG_FIRMWARE_INCLUDE_FRPC/d' .config
         sed -i '/CONFIG_FIRMWARE_INCLUDE_ALIDDNS/d' .config
@@ -100,54 +85,4 @@ jobs:
         sed -i '/CONFIG_FIRMWARE_INCLUDE_XRAY/d' .config
         sed -i '/CONFIG_FIRMWARE_INCLUDE_TROJAN/d' .config
         sed -i '/CONFIG_FIRMWARE_INCLUDE_SSOBFS/d' .config
-        sed -i '/CONFIG_FIRMWARE_INCLUDE_SOFTETHERVPN_SERVER/d' .config
-        sed -i '/CONFIG_FIRMWARE_INCLUDE_SOFTETHERVPN_CLIENT/d' .config
-        sed -i '/CONFIG_FIRMWARE_INCLUDE_SOFTETHERVPN_CMD/d' .config
-        sed -i '/CONFIG_FIRMWARE_INCLUDE_NPC/d' .config
-        sed -i '/CONFIG_FIRMWARE_WEBUI_HIDE_VPN/d' .config
-        sed -i '/CONFIG_FIRMWARE_INCLUDE_OPENVPN/d' .config
-
-        # ---- C. 在这里重新写入"你需要的功能"（y=集成, n=忽略）----
-        # 内网穿透
-        #echo "CONFIG_FIRMWARE_INCLUDE_NPC=y" >> .config
-        #echo "CONFIG_FIRMWARE_INCLUDE_ZEROTIER=y" >> .config # ~1.3M
-        #echo "CONFIG_FIRMWARE_INCLUDE_FRPC=y" >> .config
-        #echo "CONFIG_FIRMWARE_INCLUDE_ALIDDNS=y" >> .config
-        # 科学上网
-        #echo "CONFIG_FIRMWARE_INCLUDE_SHADOWSOCKS=y" >> .config
-        #echo "CONFIG_FIRMWARE_INCLUDE_V2RAY=y" >> .config
-        #echo "CONFIG_FIRMWARE_INCLUDE_XRAY=y" >> .config
-        #echo "CONFIG_FIRMWARE_INCLUDE_TROJAN=y" >> .config
-        #echo "CONFIG_FIRMWARE_INCLUDE_SSOBFS=y" >> .config
-        # VPN
-        #echo "CONFIG_FIRMWARE_INCLUDE_OPENVPN=y" >> .config
-        #echo "CONFIG_FIRMWARE_INCLUDE_SOFTETHERVPN_SERVER=y" >> .config
-        #echo "CONFIG_FIRMWARE_INCLUDE_SOFTETHERVPN_CLIENT=y" >> .config
-        #echo "CONFIG_FIRMWARE_INCLUDE_SOFTETHERVPN_CMD=y" >> .config
-        # TRANSMISSION 下载（默认开启，不需要就注释掉下面两行）
-        echo "CONFIG_FIRMWARE_INCLUDE_TRANSMISSION=y" >> .config
-        echo "CONFIG_FIRMWARE_INCLUDE_TRANSMISSION_WEB_CONTROL=y" >> .config
-
-        # 自定义功能参考 configs/templates/ 下的 config 文件，格式同上：
-        # sed -i '/自定义项/d' .config
-        # echo "自定义项=y" >> .config
-
-        # ==================================================================
-        # 编译收尾
-        # ==================================================================
-        sed -i 's/\r//' /opt/rt-n56u/trunk/.config   # 去 CRLF，防 Windows 换行导致读配置失败
-        sudo ./clear_tree
-        sudo ./build_firmware_modify $TNAME 0
-        sudo mv -f images/*.trx /opt/images/
-
-    # ------------------------------------------------------------------
-    # 4. 上传固件
-    # always(): 失败也尝试上传(目录可能为空会告警，不影响结果)
-    # 想清爽可改成 if: success()
-    # ------------------------------------------------------------------
-    - name: Upload packages
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: Padavan-packages
-        path: /opt/images
+        sed -i '/CONFIG_FIRMWARE_INCLUDE_SOFTETHERVPN
