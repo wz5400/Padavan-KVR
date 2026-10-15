@@ -31,6 +31,7 @@ jobs:
           echo "ERROR: 工具链下载失败，缺少mipsel编译器"
           exit 1
         fi
+        sudo ln -s /opt/rt-n56u/toolchain-mipsel/toolchain-3.4.x /toolchain-3.4.x
         mkdir -p /opt/images/
 
     - name: Build Firmware
