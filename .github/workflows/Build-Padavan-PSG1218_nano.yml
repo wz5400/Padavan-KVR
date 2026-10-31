@@ -1,4 +1,4 @@
-# 修改TNAME: 为你需要编译的型号，注意名称必须与 configs/templates/ 目录下真实的 .config 文件名一致
+# 修改 TNAME：为你需要编译的型号，注意名称必须与 configs/templates/ 目录下真实的 .config 文件名一致
 name: Build-Padavan-PSG1218_nano
 
 on:
@@ -37,6 +37,59 @@ jobs:
         sh dl_toolchain.sh
         mkdir -p /opt/images/
 
+    ##################################################################################
+    # 【方案 A 落地】给 msd_lite / liblcb 打老内核兼容补丁
+    # 根因：pidfd_open 等系统调用是 Linux 5.3+ 才有的，Padavan 用 3.4.x 内核头文件
+    # + uClibc，<sys/syscall.h> 里没有 SYS_pidfd_open 宏 -> 报 undeclared
+    # 做法：为一批新内核才有的 SYS_* 补兜底定义（头文件缺失时定义为 -1），
+    # 于是 syscall(-1, ...) 可编译，运行时自然返回 -1 / errno=ENOSYS，
+    # 调用方走原有失败分支降级 —— 不需要硬填 MIPS 系统调用号
+    # 同时清掉 clang 专用的 -Wno-unsafe-buffer-usage，消除 cc1: unrecognized option
+    # 只动 user/msd_lite 目录；若你没开 msd_lite，本步骤找不到文件会静默跳过，无副作用
+    ##################################################################################
+    - name: Patch msd_lite for old kernel headers (3.4.x + uClibc)
+      run: |
+        SRC=/opt/rt-n56u/trunk/user/msd_lite
+        [ -d "$SRC" ] || { echo "msd_lite not present, skip patch"; exit 0; }
+        cd "$SRC"
+
+        # ---- 1) 生成兼容 shim 头（只注入到真正用到这些宏的 .c/.h 文件）----
+        SHIM=/tmp/padavan_compat_shim.h
+        {
+          echo '/* PADAVAN_COMPAT_SHIM begin (auto-injected for 3.4.x + uClibc) */'
+          echo '#include <errno.h>'
+          echo '#include <unistd.h>'
+          echo '#include <sys/syscall.h>'
+          for n in pidfd_open pidfd_send_signal close_range clone3 statx \
+                   getrandom membarrier rseq faccessat2 openat2 \
+                   landlock_create_ruleset landlock_add_rule landlock_restrict_self \
+                   mseal map_shadow_stack fchmodat2 cachestat; do
+            printf '#ifndef SYS_%s\n# ifdef __NR_%s\n# define SYS_%s __NR_%s\n# else\n# define SYS_%s (-1)\n# endif\n# endif\n' "$n" "$n" "$n" "$n" "$n"
+          done
+          echo '/* PADAVAN_COMPAT_SHIM end */'
+        } > "$SHIM"
+
+        # ---- 2) 注入点：最后一个 #include 之后（没有 include 就放文件头）----
+        PATTERN='SYS_(pidfd_open|pidfd_send_signal|close_range|clone3|statx|getrandom|membarrier|rseq|faccessat2|openat2|mseal|cachestat)'
+        cnt=0
+        for f in $(grep -rlE "$PATTERN" --include='*.c' --include='*.h' . 2>/dev/null); do
+          grep -q 'PADAVAN_COMPAT_SHIM' "$f" && continue
+          ln=$(grep -n '^[[:space:]]*#[[:space:]]*include' "$f" | tail -1 | cut -d: -f1)
+          [ -z "$ln" ] && ln=0
+          awk -v n="$ln" -v shim="$SHIM" ' { print } NR==n { while ((getline l < shim) > 0) print l; close(shim) } ' "$f" > /tmp/_padavan_patched && mv /tmp/_padavan_patched "$f"
+          echo " patched: $f"
+          cnt=$((cnt+1))
+        done
+        echo "=== compat shim injected into $cnt file(s) ==="
+
+        # ---- 3) 清掉 clang 专用编译选项，消除 cc1: unrecognized command line option ----
+        grep -rl --binary-files=without-match 'Wno-unsafe-buffer-usage' . 2>/dev/null \
+          | xargs -r sed -i 's/ -Wno-unsafe-buffer-usage//g; s/-Wno-unsafe-buffer-usage//g'
+        echo "=== clang-only flag cleaned ==="
+
+        # ---- 4) 自查：还有哪些 syscall(SYS_xxx) 可能撞同类问题（仅打印，不阻断）----
+        grep -rn --include='*.c' --include='*.h' -E 'syscall\(SYS_[a-z0-9_]+' . 2>/dev/null | head -n 40 || true
+
     - name: Build Firmware
       env:
         # 务必到 configs/templates/ 核对：必须存在 PSG1218_nano.config 这个文件，否则下方判断会 exit 1
@@ -62,11 +115,19 @@ jobs:
         ######################################################################
         # echo "CONFIG_FIRMWARE_INCLUDE_ZEROTIER=y" >> .config # zerotier ~1.3M
 
+        # 若你不需要组播/流媒体代理，也可以直接关掉 msd_lite，彻底绕开本轮所有兼容性问题：
+        # sed -i '/CONFIG_FIRMWARE_INCLUDE_MSD_LITE/d' .config
+        # echo "CONFIG_FIRMWARE_INCLUDE_MSD_LITE=n" >> .config
+
         #########################################################################################
         # 自定义添加其它功能请参考源码 configs/templates/ 下的 config 文件，按上面格式添加：
         # sed -i '/自定义项/d' .config
         # echo "自定义项=y" >> .config
         #########################################################################################
+
+        # 排障技巧：如需让第一个 error: 与源码行号严格对应，取消下一行注释改单线程编译（耗时明显变长）
+        # export MAKEFLAGS="-j1"
+
         sudo ./clear_tree
         sudo ./build_firmware_modify $TNAME 0
         sudo mv -f images/*.trx /opt/images/ || true
@@ -78,3 +139,6 @@ jobs:
         name: Padavan-packages
         path: /opt/images
         if-no-files-found: warn
+
+    - name: Show artifacts
+      run: ls -lh /opt/images/ || true
