@@ -1,10 +1,11 @@
 name: Build Padavan PSG1218 (fightroad KVR)
 
+# 仅支持手动点击运行，无任何自动触发
 on:
   workflow_dispatch:
     inputs:
       ENABLE_PLUGIN:
-        description: 额外修改配置(可选sed语句，留空默认PSG1218模板)
+        description: sed修改配置语句（可选，留空使用默认PSG1218模板）
         required: false
         default: ""
 
@@ -12,9 +13,9 @@ jobs:
   build:
     runs-on: ubuntu-20.04
     steps:
-      - name: 安装依赖
+      - name: 安装编译依赖
         run: | sudo apt-get update sudo apt-get install -y unzip libtool-bin curl cmake gperf gawk flex bison nano xxd \ cpio git python-docutils gettext automake autopoint texinfo build-essential help2man \ pkg-config zlib1g-dev libgmp3-dev libmpc-dev libmpfr-dev libncurses5-dev libltdl-dev 
-      - name: 拉取 fightroad Padavan-KVR 源码
+      - name: 拉取 fightroad/Padavan-KVR 源码
         uses: actions/checkout@v4
         with:
           repository: fightroad/Padavan-KVR
@@ -22,15 +23,15 @@ jobs:
           path: rt-n56u
           fetch-depth: 1
 
-      - name: 下载预编译 mipsel 工具链（加速，避免本地编译工具链）
+      - name: 下载 mipsel 预编译工具链
         run: | cd rt-n56u/toolchain-mipsel wget -O mipsel-linux-uclibc.tar.xz https://github.com/hanwckf/padavan-toolchain/releases/download/v1.1/mipsel-linux-uclibc.tar.xz tar -Jxf mipsel-linux-uclibc.tar.xz rm -f mipsel-linux-uclibc.tar.xz 
-      - name: 开始编译 PSG1218
+      - name: 编译 PSG1218 固件
         run: | cd rt-n56u/trunk chmod +x ./build_firmware_modify ./build_firmware_modify PSG1218         env:
           TNAME: PSG1218
 
-      - name: 收集固件打包
+      - name: 收集固件
         run: | cd rt-n56u/trunk mkdir -p firmware_out find . -maxdepth 2 -name "*.trx" -o -name "*.bin" | xargs -I {} cp {} firmware_out/ ls -lh firmware_out/ 
-      - name: 上传固件 Artifact
+      - name: 上传固件产物
         uses: actions/upload-artifact@v4
         with:
           name: PSG1218-Padavan-KVR-firmware
