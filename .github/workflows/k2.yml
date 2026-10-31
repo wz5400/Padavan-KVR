@@ -1,5 +1,4 @@
-name: Build Padavan PSG1218 (fightroad KVR)
-
+name: Build Padavan k2
 # 仅支持手动点击运行，无任何自动触发
 on:
   workflow_dispatch:
